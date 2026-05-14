@@ -17,7 +17,7 @@ export async function POST(request) {
     }
 
     // 2. Validate company_type matches ENUM
-    const validTypes = ["Sales", "Production", "Services", "Retail", "Technology", "Other"];
+    const validTypes = ["Sales", "Production", "Service", "Product", "Retail", "Technology", "Other"];
     if (!validTypes.includes(company_type)) {
       return NextResponse.json(
         { message: `Invalid company type. Must be one of: ${validTypes.join(", ")}` },
