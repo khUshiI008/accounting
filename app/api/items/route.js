@@ -1,11 +1,224 @@
+// import { NextResponse } from "next/server";
+// import mysql from "mysql2/promise";
+// import jwt from "jsonwebtoken";
+// import masterDB from "@/lib/masterDB";
+
+// export async function POST(request) {
+//   try {
+//     // 1. Get token from header
+//     const authHeader = request.headers.get("authorization");
+
+//     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//       return NextResponse.json(
+//         { message: "Unauthorized" },
+//         { status: 401 }
+//       );
+//     }
+
+//     const token = authHeader.split(" ")[1];
+
+//     // 2. Verify token
+//     let decoded;
+//     try {
+//       decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     } catch (err) {
+//       return NextResponse.json(
+//         { message: "Invalid token" },
+//         { status: 401 }
+//       );
+//     }
+
+//     const userId = decoded.userId;
+
+//     // 3. Get tenant DB name
+//     const [tenant] = await masterDB.query(
+//       "SELECT db_name FROM tenants WHERE user_id = ?",
+//       [userId]
+//     );
+
+//     if (tenant.length === 0) {
+//       return NextResponse.json(
+//         { message: "Tenant not found" },
+//         { status: 404 }
+//       );
+//     }
+
+//     const db_name = tenant[0].db_name;
+
+//     // 4. Get request body
+//     const body = await request.json();
+//     const { name, unit, price, stock } = body;
+
+//     // 5. Validate
+//     if (!name || !unit || !price) {
+//       return NextResponse.json(
+//         { message: "Name, unit, and price are required" },
+//         { status: 400 }
+//       );
+//     }
+
+//     // 6. Connect to tenant DB
+//     const conn = await mysql.createConnection({
+//       host: process.env.DB_HOST,
+//       user: process.env.DB_USER,
+//       password: process.env.DB_PASS,
+//       database: db_name,
+//     });
+
+//     // 7. Insert item
+//     const [result] = await conn.query(
+//       `INSERT INTO products (name, unit, price, stock)
+//        VALUES (?, ?, ?, ?)`,
+//       [name, unit, price, stock || 0]
+//     );
+
+//     await conn.end();
+
+//     // 8. Response
+//     return NextResponse.json(
+//       {
+//         message: "Item added successfully",
+//         item: {
+//           id: result.insertId,
+//           name,
+//           unit,
+//           price,
+//           stock: stock || 0,
+//         },
+//       },
+//       { status: 201 }
+//     );
+//   } catch (error) {
+//     console.error("Add Item Error:", error);
+//     return NextResponse.json(
+//       { message: "Internal server error" },
+//       { status: 500 }
+//     );
+//   }
+// }
+
+// export async function GET(request) {
+//   try {
+//     // 1. Get token
+//     const authHeader = request.headers.get("authorization");
+
+//     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//       return NextResponse.json(
+//         { message: "Unauthorized" },
+//         { status: 401 }
+//       );
+//     }
+
+//     const token = authHeader.split(" ")[1];
+
+//     // 2. Verify token
+//     let decoded;
+//     try {
+//       decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     } catch (err) {
+//       return NextResponse.json(
+//         { message: "Invalid token" },
+//         { status: 401 }
+//       );
+//     }
+
+//     const userId = decoded.userId;
+
+//     // 3. Get tenant DB
+//     const [tenant] = await masterDB.query(
+//       "SELECT db_name FROM tenants WHERE user_id = ?",
+//       [userId]
+//     );
+
+//     if (tenant.length === 0) {
+//       return NextResponse.json(
+//         { message: "Tenant not found" },
+//         { status: 404 }
+//       );
+//     }
+
+//     const db_name = tenant[0].db_name;
+
+//     // 4. Connect to tenant DB
+//     const conn = await mysql.createConnection({
+//       host: process.env.DB_HOST,
+//       user: process.env.DB_USER,
+//       password: process.env.DB_PASS,
+//       database: db_name,
+//     });
+
+//     // 5. Fetch items
+//     const [items] = await conn.query(
+//       `SELECT id, name, unit, price, stock, created_at
+//        FROM products
+//        ORDER BY created_at DESC`
+//     );
+
+//     await conn.end();
+
+//     // 6. Return response
+//     return NextResponse.json(
+//       {
+//         message: "Items fetched successfully",
+//         items,
+//       },
+//       { status: 200 }
+//     );
+//   } catch (error) {
+//     console.error("Fetch Items Error:", error);
+//     return NextResponse.json(
+//       { message: "Internal server error" },
+//       { status: 500 }
+//     );
+//   }
+// }
+
 import { NextResponse } from "next/server";
-import { getTenantContext, handleError } from "@/lib/tenantDB";
+import mysql from "mysql2/promise";
+import jwt from "jsonwebtoken";
+import masterDB from "@/lib/masterDB";
+
+// 🔹 Common function: Get tenant DB connection
+async function getTenantConnection(request) {
+  const authHeader = request.headers.get("authorization");
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    throw new Error("UNAUTHORIZED");
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    throw new Error("INVALID_TOKEN");
+  }
+
+  const userId = decoded.userId;
+
+  const [tenant] = await masterDB.query(
+    "SELECT db_name FROM tenants WHERE user_id = ?",
+    [userId]
+  );
+
+  if (tenant.length === 0) {
+    throw new Error("TENANT_NOT_FOUND");
+  }
+
+  const db_name = tenant[0].db_name;
+
+  return await mysql.createConnection({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: db_name,
+  });
+}
 
 export async function POST(request) {
-  let conn;
   try {
-    const { conn: c, tenantId } = await getTenantContext(request);
-    conn = c;
+    const conn = await getTenantConnection(request);
 
     const body = await request.json();
     const { name, unit, price, stock, HSN_code } = body;
@@ -18,6 +231,7 @@ export async function POST(request) {
       );
     }
 
+    // Validate HSN_code for products (not services)
     if (unit !== "service" && (!HSN_code || HSN_code.trim() === "")) {
       return NextResponse.json(
         { message: "HSN Code is required for products" },
@@ -25,12 +239,14 @@ export async function POST(request) {
       );
     }
 
+    // Use provided HSN_code or default for services
     const finalHSNCode = HSN_code && HSN_code.trim() !== "" ? HSN_code : "9988";
+    console.log("final HSN code", finalHSNCode);
 
     const [result] = await conn.query(
-      `INSERT INTO products (tenant_id, name, unit, price, stock, HSN_code)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [tenantId, name, unit, price, stock || 0, finalHSNCode]
+      `INSERT INTO products (name, unit, price, stock, HSN_code)
+       VALUES (?, ?, ?, ?, ?)`,
+      [name, unit, price, stock || 0, finalHSNCode]
     );
 
     await conn.end();
@@ -38,92 +254,106 @@ export async function POST(request) {
     return NextResponse.json(
       {
         message: "Item added successfully",
-        item: { id: result.insertId, name, unit, price, stock: stock || 0, HSN_code: finalHSNCode },
+        item: {
+          id: result.insertId,
+          name,
+          unit,
+          price,
+          stock: stock || 0,
+          HSN_code: finalHSNCode,
+        },
       },
       { status: 201 }
     );
   } catch (error) {
-    if (conn) await conn.end().catch(() => {});
-    const e = handleError(error);
-    return NextResponse.json({ message: e.message }, { status: e.status });
+    return handleError(error);
   }
 }
 
 export async function GET(request) {
-  let conn;
   try {
-    const { conn: c, tenantId } = await getTenantContext(request);
-    conn = c;
+    const conn = await getTenantConnection(request);
 
     const [items] = await conn.query(
       `SELECT id, name, unit, price, stock, created_at, HSN_code
-       FROM products WHERE tenant_id = ?
-       ORDER BY created_at DESC`,
-      [tenantId]
+       FROM products 
+       ORDER BY created_at DESC`
     );
 
     await conn.end();
+
     return NextResponse.json({ items }, { status: 200 });
   } catch (error) {
-    if (conn) await conn.end().catch(() => {});
-    const e = handleError(error);
-    return NextResponse.json({ message: e.message }, { status: e.status });
+    return handleError(error);
   }
 }
 
 export async function PUT(request) {
-  let conn;
   try {
-    const { conn: c, tenantId } = await getTenantContext(request);
-    conn = c;
+    const conn = await getTenantConnection(request);
 
     const body = await request.json();
     const { id, name, unit, price, stock, HSN_code } = body;
 
     if (!id) {
-      return NextResponse.json({ message: "Item ID is required" }, { status: 400 });
+      return NextResponse.json(
+        { message: "Item ID is required" },
+        { status: 400 }
+      );
     }
 
+    // Validate HSN_code for products (not services)
     if (unit !== "service" && (!HSN_code || HSN_code.trim() === "")) {
-      return NextResponse.json({ message: "HSN Code is required for products" }, { status: 400 });
+      return NextResponse.json(
+        { message: "HSN Code is required for products" },
+        { status: 400 }
+      );
     }
 
+    // Use provided HSN_code or default for services
     const finalHSNCode = HSN_code && HSN_code.trim() !== "" ? HSN_code : "9988";
 
     await conn.query(
-      `UPDATE products SET name=?, unit=?, price=?, stock=?, HSN_code=?
-       WHERE id=? AND tenant_id=?`,
-      [name, unit, price, stock, finalHSNCode, id, tenantId]
+      `UPDATE products 
+       SET name=?, unit=?, price=?, stock=?, HSN_code=? 
+       WHERE id=?`,
+      [name, unit, price, stock, finalHSNCode, id]
     );
 
     await conn.end();
-    return NextResponse.json({ message: "Item updated successfully" }, { status: 200 });
+
+    return NextResponse.json(
+      { message: "Item updated successfully" },
+      { status: 200 }
+    );
   } catch (error) {
-    if (conn) await conn.end().catch(() => {});
-    const e = handleError(error);
-    return NextResponse.json({ message: e.message }, { status: e.status });
+    return handleError(error);
   }
 }
 
 export async function DELETE(request) {
-  let conn;
   try {
-    const { conn: c, tenantId } = await getTenantContext(request);
-    conn = c;
+    const conn = await getTenantConnection(request);
 
     const { id } = await request.json();
 
     if (!id) {
-      return NextResponse.json({ message: "Item ID is required" }, { status: 400 });
+      return NextResponse.json(
+        { message: "Item ID is required" },
+        { status: 400 }
+      );
     }
 
+    // Check if item is used in any purchases
     const [purchaseCheck] = await conn.query(
-      `SELECT COUNT(*) as count FROM purchase_items WHERE item_id = ? AND tenant_id = ?`,
-      [id, tenantId]
+      `SELECT COUNT(*) as count FROM purchase_items WHERE item_id = ?`,
+      [id]
     );
+
+    // Check if item is used in any sales
     const [salesCheck] = await conn.query(
-      `SELECT COUNT(*) as count FROM sale_items WHERE item_id = ? AND tenant_id = ?`,
-      [id, tenantId]
+      `SELECT COUNT(*) as count FROM sale_items WHERE item_id = ?`,
+      [id]
     );
 
     const purchaseCount = purchaseCheck[0]?.count || 0;
@@ -133,7 +363,7 @@ export async function DELETE(request) {
       await conn.end();
       return NextResponse.json(
         {
-          message: `Cannot delete item. It is used in ${purchaseCount} purchase(s) and ${salesCount} sale(s).`,
+          message: `Cannot delete item. It is used in ${purchaseCount} purchase(s) and ${salesCount} sale(s). Please remove it from all transactions first.`,
           usedInPurchases: purchaseCount,
           usedInSales: salesCount,
         },
@@ -141,13 +371,37 @@ export async function DELETE(request) {
       );
     }
 
-    await conn.query(`DELETE FROM products WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
+    // If no references found, safe to delete
+    await conn.query(`DELETE FROM products WHERE id = ?`, [id]);
+
     await conn.end();
 
-    return NextResponse.json({ message: "Item deleted successfully" }, { status: 200 });
+    return NextResponse.json(
+      { message: "Item deleted successfully" },
+      { status: 200 }
+    );
   } catch (error) {
-    if (conn) await conn.end().catch(() => {});
-    const e = handleError(error);
-    return NextResponse.json({ message: e.message }, { status: e.status });
+    return handleError(error);
   }
+}
+
+function handleError(error) {
+  console.error(error);
+
+  if (error.message === "UNAUTHORIZED") {
+    return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
+  }
+
+  if (error.message === "INVALID_TOKEN") {
+    return NextResponse.json({ message: "Invalid token" }, { status: 401 });
+  }
+
+  if (error.message === "TENANT_NOT_FOUND") {
+    return NextResponse.json({ message: "Tenant not found" }, { status: 404 });
+  }
+
+  return NextResponse.json(
+    { message: "Internal server error" },
+    { status: 500 }
+  );
 }
