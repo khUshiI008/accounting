@@ -14,11 +14,8 @@ export default function Challans() {
   const [editId, setEditId] = useState(null);
   const [showQuickAddItem, setShowQuickAddItem] = useState(false);
   const [showQuickAddParty, setShowQuickAddParty] = useState(false);
-   const [mounted, setMounted] = useState(false);
-    
-   useEffect(() => {
-    setMounted(true);  // ← add this line to the existing useEffect, or add a new one
-  }, []);
+  
+
   const [formData, setFormData] = useState({
     party: "",
     itemsList: [],
@@ -189,7 +186,7 @@ export default function Challans() {
       itemsList: formData.itemsList.filter((_, i) => i !== index),
     });
   };
-    if (!mounted) return null;  
+
   return (
     <div className="min-h-screen bg-gray-50">
 
