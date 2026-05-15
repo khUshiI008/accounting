@@ -211,7 +211,7 @@ export default function Purchases() {
       party: p.party_id || "",
       date: p.date ? p.date.split("T")[0] : "",
       state: p.state || "",
-      GST: p.gst_percent || 0,
+      gst_party_id: p.gst_party_id || "",
       TDS: p.tds_percent || 0,
       itemsList: p.items?.map((it) => ({
         id: it.item_id,

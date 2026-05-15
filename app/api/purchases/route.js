@@ -43,15 +43,9 @@ export async function POST(request) {
       return NextResponse.json({ message: "Required fields missing" }, { status: 400 });
     }
 
-    // Check if gst_party_id column exists
-    const [columns] = await conn.query(
-      `SHOW COLUMNS FROM purchases LIKE 'gst_party_id'`
-    );
-    const hasGstPartyId = columns.length > 0;
-
-    // Get GST percentage from GST party if selected and column exists
+    // Get GST percentage from GST party if selected
     let gstPercent = 0;
-    if (gst_party_id && hasGstPartyId) {
+    if (gst_party_id) {
       const [gstParty] = await conn.query(
         "SELECT gst_percentage FROM parties WHERE id = ? AND party_type = 'gst'",
         [gst_party_id]
@@ -68,15 +62,8 @@ export async function POST(request) {
     const gstAmount = (subtotal * gstPercent) / 100;
     const totalAmount = subtotal + gstAmount;
 
-    let insertQuery, insertValues;
-    if (hasGstPartyId) {
-      insertQuery = `INSERT INTO purchases (bill_number, party_id, date, state, subtotal, total_items, gst_percent, gst_amount, total_amount, gst_party_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-      insertValues = [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, totalAmount, gst_party_id || null];
-    } else {
-      // Fallback for old schema
-      insertQuery = `INSERT INTO purchases (bill_number, party_id, date, state, subtotal, total_items, gst_percent, gst_amount, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-      insertValues = [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, totalAmount];
-    }
+    const insertQuery = `INSERT INTO purchases (bill_number, party_id, date, state, subtotal, total_items, gst_percent, gst_amount, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const insertValues = [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, totalAmount];
 
     const [purchaseResult] = await conn.query(insertQuery, insertValues);
     const purchaseId = purchaseResult.insertId;
@@ -95,7 +82,7 @@ export async function POST(request) {
     }
 
     // 🔹 Update GST party current_tax if GST was applied and column exists
-    if (gst_party_id && gstAmount > 0 && hasGstPartyId) {
+    if (gst_party_id && gstAmount > 0) {
       await conn.query(
         `UPDATE parties 
          SET current_tax = current_tax + ? 
@@ -118,26 +105,10 @@ export async function GET(request) {
   try {
     const { connection: conn } = await getTenantConnection(request);
     
-    // First check if gst_party_id column exists
-    const [columns] = await conn.query(
-      `SHOW COLUMNS FROM purchases LIKE 'gst_party_id'`
-    );
-    
-    let query;
-    if (columns.length > 0) {
-      // New schema with gst_party_id
-      query = `SELECT p.*, pa.name AS party_name, gst_pa.name AS gst_party_name, gst_pa.gst_percentage 
-               FROM purchases p 
-               JOIN parties pa ON p.party_id = pa.id 
-               LEFT JOIN parties gst_pa ON p.gst_party_id = gst_pa.id AND gst_pa.party_type = 'gst'
-               ORDER BY p.created_at DESC`;
-    } else {
-      // Old schema without gst_party_id
-      query = `SELECT p.*, pa.name AS party_name 
-               FROM purchases p 
-               JOIN parties pa ON p.party_id = pa.id 
-               ORDER BY p.created_at DESC`;
-    }
+    const query = `SELECT p.*, pa.name AS party_name 
+             FROM purchases p 
+             JOIN parties pa ON p.party_id = pa.id 
+             ORDER BY p.created_at DESC`;
     
     const [purchases] = await conn.query(query);
     
@@ -156,20 +127,33 @@ export async function PUT(request) {
   const { connection: conn, companyType } = await getTenantConnection(request);
   try {
     const body = await request.json();
-    const { id, bill_number, party, date, state, GST, TDS, itemsList } = body;
+    const { id, bill_number, party, date, state, gst_party_id, TDS, itemsList } = body;
     if (!id || !party || !date || !itemsList || itemsList.length === 0) {
       return NextResponse.json({ message: "Required fields missing" }, { status: 400 });
     }
+
+    // Get GST percentage from GST party if selected
+    let gstPercent = 0;
+    if (gst_party_id) {
+      const [gstParty] = await conn.query(
+        "SELECT gst_percentage FROM parties WHERE id = ? AND party_type = 'gst'",
+        [gst_party_id]
+      );
+      if (gstParty.length > 0) {
+        gstPercent = gstParty[0].gst_percentage;
+      }
+    }
+
     await conn.beginTransaction();
     let subtotal = 0;
     let totalItems = itemsList.length;
     itemsList.forEach((item) => { subtotal += item.qty * item.price; });
-    const gstAmount = (subtotal * (GST || 0)) / 100;
+    const gstAmount = (subtotal * gstPercent) / 100;
     const tdsAmount = (subtotal * (TDS || 0)) / 100;
     const totalAmount = subtotal + gstAmount - tdsAmount;
     await conn.query(
       `UPDATE purchases SET bill_number = ?, party_id = ?, date = ?, state = ?, subtotal = ?, total_items = ?, gst_percent = ?, gst_amount = ?, tds_percent = ?, tds_amount = ?, total_amount = ? WHERE id = ?`,
-      [bill_number, party, date, state, subtotal, totalItems, GST || 0, gstAmount, TDS || 0, tdsAmount, totalAmount, id]
+      [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, TDS || 0, tdsAmount, totalAmount, id]
     );
     const [oldItems] = await conn.query(`SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?`, [id]);
     if (companyType === "Production") {
