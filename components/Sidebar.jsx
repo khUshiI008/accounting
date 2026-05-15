@@ -83,6 +83,12 @@ export default function Sidebar() {
         path: "/dashboard/expenses",
         iconColor: "text-red-400"
       },
+      { 
+        name: "Challan", 
+        icon: Wallet, 
+        path: "/dashboard/challan",
+        iconColor: "text-red-400"
+      },
     ]
   },
   {
