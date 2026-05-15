@@ -33,8 +33,9 @@ async function getTenantConnection(request) {
 // 🔹 CREATE CHALLAN (WITH ITEMS)
 //////////////////////////////////////////////////////////////////
 export async function POST(request) {
-  const { connection: conn } = await getTenantConnection(request);
+  let conn;
   try {
+    ({ connection: conn } = await getTenantConnection(request));
     const body = await request.json();
     const { party, itemsList, amount } = body;
 
@@ -61,8 +62,7 @@ export async function POST(request) {
     await conn.end();
     return NextResponse.json({ message: "Challan saved successfully" }, { status: 201 });
   } catch (error) {
-    await conn.rollback();
-    await conn.end();
+    if (conn) { await conn.rollback(); await conn.end(); }
     return handleError(error);
   }
 }
@@ -71,8 +71,9 @@ export async function POST(request) {
 // 🔹 GET ALL CHALLANS
 //////////////////////////////////////////////////////////////////
 export async function GET(request) {
+  let conn;
   try {
-    const { connection: conn } = await getTenantConnection(request);
+    ({ connection: conn } = await getTenantConnection(request));
 
     const [challans] = await conn.query(
       `SELECT c.*, pa.name AS party_name
@@ -92,6 +93,7 @@ export async function GET(request) {
     await conn.end();
     return NextResponse.json({ challans }, { status: 200 });
   } catch (error) {
+    if (conn) await conn.end();
     return handleError(error);
   }
 }
@@ -100,8 +102,9 @@ export async function GET(request) {
 // 🔹 UPDATE CHALLAN
 //////////////////////////////////////////////////////////////////
 export async function PUT(request) {
-  const { connection: conn } = await getTenantConnection(request);
+  let conn;
   try {
+    ({ connection: conn } = await getTenantConnection(request));
     const body = await request.json();
     const { id, party, itemsList, amount } = body;
 
@@ -129,8 +132,7 @@ export async function PUT(request) {
     await conn.end();
     return NextResponse.json({ message: "Challan updated successfully" }, { status: 200 });
   } catch (error) {
-    await conn.rollback();
-    await conn.end();
+    if (conn) { await conn.rollback(); await conn.end(); }
     return handleError(error);
   }
 }
@@ -139,8 +141,9 @@ export async function PUT(request) {
 // 🔹 DELETE CHALLAN
 //////////////////////////////////////////////////////////////////
 export async function DELETE(request) {
-  const { connection: conn } = await getTenantConnection(request);
+  let conn;
   try {
+    ({ connection: conn } = await getTenantConnection(request));
     const body = await request.json();
     const { id } = body;
     if (!id) {
@@ -156,8 +159,7 @@ export async function DELETE(request) {
     await conn.end();
     return NextResponse.json({ message: "Challan deleted successfully" }, { status: 200 });
   } catch (error) {
-    await conn.rollback();
-    await conn.end();
+    if (conn) { await conn.rollback(); await conn.end(); }
     return handleError(error);
   }
 }
