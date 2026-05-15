@@ -16,7 +16,6 @@ async function getTenantConnection(request) {
     throw new Error("INVALID_TOKEN");
   }
   const userId = decoded.userId;
-  const companyType = decoded.companyType;
   const [tenant] = await masterDB.query("SELECT db_name FROM tenants WHERE user_id = ?", [userId]);
   if (tenant.length === 0) {
     throw new Error("TENANT_NOT_FOUND");
@@ -27,18 +26,18 @@ async function getTenantConnection(request) {
     password: process.env.DB_PASS,
     database: tenant[0].db_name,
   });
-  return { connection, companyType };
+  return { connection };
 }
 
+//////////////////////////////////////////////////////////////////
+// 🔹 CREATE PURCHASE (WITH ITEMS)
+//////////////////////////////////////////////////////////////////
 export async function POST(request) {
-  const { connection: conn, companyType } = await getTenantConnection(request);
+  const { connection: conn } = await getTenantConnection(request);
   try {
     const body = await request.json();
     const { bill_number, party, date, state, gst_party_id, itemsList } = body;
-    
-    console.log("Company Type:", companyType);
-    console.log("Items received:", JSON.stringify(itemsList, null, 2));
-    
+
     if (!party || !date || !itemsList || itemsList.length === 0) {
       return NextResponse.json({ message: "Required fields missing" }, { status: 400 });
     }
@@ -56,37 +55,32 @@ export async function POST(request) {
     }
 
     await conn.beginTransaction();
+
     let subtotal = 0;
-    let totalItems = itemsList.length;
+    const totalItems = itemsList.length;
     itemsList.forEach((item) => { subtotal += item.qty * item.price; });
     const gstAmount = (subtotal * gstPercent) / 100;
     const totalAmount = subtotal + gstAmount;
 
-    const insertQuery = `INSERT INTO purchases (bill_number, party_id, date, state, subtotal, total_items, gst_percent, gst_amount, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const insertValues = [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, totalAmount];
-
-    const [purchaseResult] = await conn.query(insertQuery, insertValues);
+    const [purchaseResult] = await conn.query(
+      `INSERT INTO purchases (bill_number, party_id, date, state, subtotal, total_items, gst_percent, gst_amount, total_amount, gst_party_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, totalAmount, gst_party_id || null]
+    );
     const purchaseId = purchaseResult.insertId;
-    
+
     for (const item of itemsList) {
-      console.log(`Processing item: id=${item.id}, qty=${item.qty}, type=${typeof item.qty}`);
-      await conn.query(`INSERT INTO purchase_items (purchase_id, item_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)`,
-        [purchaseId, item.id, item.qty, item.price, item.qty * item.price]);
-      if (companyType === "Production") {
-        console.log(`Updating stock for item ${item.id}: +${item.qty}`);
-        const result = await conn.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [item.qty, item.id]);
-        console.log(`Stock update result:`, result[0]);
-      } else {
-        console.log("Skipping stock update - Company type is:", companyType);
-      }
+      await conn.query(
+        `INSERT INTO purchase_items (purchase_id, item_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)`,
+        [purchaseId, item.id, item.qty, item.price, item.qty * item.price]
+      );
+      // Always increase stock on purchase
+      await conn.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [item.qty, item.id]);
     }
 
-    // 🔹 Update GST party current_tax if GST was applied and column exists
+    // Update GST party current_tax if GST was applied
     if (gst_party_id && gstAmount > 0) {
       await conn.query(
-        `UPDATE parties 
-         SET current_tax = current_tax + ? 
-         WHERE id = ? AND party_type = 'gst'`,
+        `UPDATE parties SET current_tax = current_tax + ? WHERE id = ? AND party_type = 'gst'`,
         [gstAmount, gst_party_id]
       );
     }
@@ -101,21 +95,29 @@ export async function POST(request) {
   }
 }
 
+//////////////////////////////////////////////////////////////////
+// 🔹 GET ALL PURCHASES
+//////////////////////////////////////////////////////////////////
 export async function GET(request) {
   try {
     const { connection: conn } = await getTenantConnection(request);
-    
-    const query = `SELECT p.*, pa.name AS party_name 
-             FROM purchases p 
-             JOIN parties pa ON p.party_id = pa.id 
-             ORDER BY p.created_at DESC`;
-    
-    const [purchases] = await conn.query(query);
-    
+
+    const [purchases] = await conn.query(
+      `SELECT p.*, pa.name AS party_name, gst_pa.name AS gst_party_name, gst_pa.gst_percentage
+       FROM purchases p
+       JOIN parties pa ON p.party_id = pa.id
+       LEFT JOIN parties gst_pa ON p.gst_party_id = gst_pa.id AND gst_pa.party_type = 'gst'
+       ORDER BY p.created_at DESC`
+    );
+
     for (let purchase of purchases) {
-      const [items] = await conn.query(`SELECT pi.*, pr.name FROM purchase_items pi JOIN products pr ON pi.item_id = pr.id WHERE pi.purchase_id = ?`, [purchase.id]);
+      const [items] = await conn.query(
+        `SELECT pi.*, pr.name FROM purchase_items pi JOIN products pr ON pi.item_id = pr.id WHERE pi.purchase_id = ?`,
+        [purchase.id]
+      );
       purchase.items = items;
     }
+
     await conn.end();
     return NextResponse.json({ purchases }, { status: 200 });
   } catch (error) {
@@ -123,11 +125,15 @@ export async function GET(request) {
   }
 }
 
+//////////////////////////////////////////////////////////////////
+// 🔹 UPDATE PURCHASE
+//////////////////////////////////////////////////////////////////
 export async function PUT(request) {
-  const { connection: conn, companyType } = await getTenantConnection(request);
+  const { connection: conn } = await getTenantConnection(request);
   try {
     const body = await request.json();
     const { id, bill_number, party, date, state, gst_party_id, TDS, itemsList } = body;
+
     if (!id || !party || !date || !itemsList || itemsList.length === 0) {
       return NextResponse.json({ message: "Required fields missing" }, { status: 400 });
     }
@@ -145,30 +151,36 @@ export async function PUT(request) {
     }
 
     await conn.beginTransaction();
+
     let subtotal = 0;
-    let totalItems = itemsList.length;
+    const totalItems = itemsList.length;
     itemsList.forEach((item) => { subtotal += item.qty * item.price; });
     const gstAmount = (subtotal * gstPercent) / 100;
     const tdsAmount = (subtotal * (TDS || 0)) / 100;
     const totalAmount = subtotal + gstAmount - tdsAmount;
+
     await conn.query(
-      `UPDATE purchases SET bill_number = ?, party_id = ?, date = ?, state = ?, subtotal = ?, total_items = ?, gst_percent = ?, gst_amount = ?, tds_percent = ?, tds_amount = ?, total_amount = ? WHERE id = ?`,
-      [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, TDS || 0, tdsAmount, totalAmount, id]
+      `UPDATE purchases SET bill_number = ?, party_id = ?, date = ?, state = ?, subtotal = ?, total_items = ?, gst_percent = ?, gst_amount = ?, tds_percent = ?, tds_amount = ?, total_amount = ?, gst_party_id = ? WHERE id = ?`,
+      [bill_number, party, date, state, subtotal, totalItems, gstPercent, gstAmount, TDS || 0, tdsAmount, totalAmount, gst_party_id || null, id]
     );
+
+    // Restore old stock before re-inserting
     const [oldItems] = await conn.query(`SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?`, [id]);
-    if (companyType === "Production") {
-      for (const item of oldItems) {
-        await conn.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [item.quantity, item.item_id]);
-      }
+    for (const item of oldItems) {
+      await conn.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [item.quantity, item.item_id]);
     }
+
     await conn.query(`DELETE FROM purchase_items WHERE purchase_id = ?`, [id]);
+
+    // Insert new items and increase stock
     for (const item of itemsList) {
-      await conn.query(`INSERT INTO purchase_items (purchase_id, item_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)`,
-        [id, item.id, item.qty, item.price, item.qty * item.price]);
-      if (companyType === "Production") {
-        await conn.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [item.qty, item.id]);
-      }
+      await conn.query(
+        `INSERT INTO purchase_items (purchase_id, item_id, quantity, price, total) VALUES (?, ?, ?, ?, ?)`,
+        [id, item.id, item.qty, item.price, item.qty * item.price]
+      );
+      await conn.query(`UPDATE products SET stock = stock + ? WHERE id = ?`, [item.qty, item.id]);
     }
+
     await conn.commit();
     await conn.end();
     return NextResponse.json({ message: "Purchase updated successfully" }, { status: 200 });
@@ -179,23 +191,29 @@ export async function PUT(request) {
   }
 }
 
+//////////////////////////////////////////////////////////////////
+// 🔹 DELETE PURCHASE
+//////////////////////////////////////////////////////////////////
 export async function DELETE(request) {
-  const { connection: conn, companyType } = await getTenantConnection(request);
+  const { connection: conn } = await getTenantConnection(request);
   try {
     const body = await request.json();
     const { id } = body;
     if (!id) {
       return NextResponse.json({ message: "Purchase ID required" }, { status: 400 });
     }
+
     await conn.beginTransaction();
-    if (companyType === "Production") {
-      const [items] = await conn.query(`SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?`, [id]);
-      for (const item of items) {
-        await conn.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [item.quantity, item.item_id]);
-      }
+
+    // Restore stock when deleting a purchase
+    const [items] = await conn.query(`SELECT item_id, quantity FROM purchase_items WHERE purchase_id = ?`, [id]);
+    for (const item of items) {
+      await conn.query(`UPDATE products SET stock = stock - ? WHERE id = ?`, [item.quantity, item.item_id]);
     }
+
     await conn.query(`DELETE FROM purchase_items WHERE purchase_id = ?`, [id]);
     await conn.query(`DELETE FROM purchases WHERE id = ?`, [id]);
+
     await conn.commit();
     await conn.end();
     return NextResponse.json({ message: "Purchase deleted successfully" }, { status: 200 });
@@ -206,6 +224,9 @@ export async function DELETE(request) {
   }
 }
 
+//////////////////////////////////////////////////////////////////
+// 🔹 ERROR HANDLER
+//////////////////////////////////////////////////////////////////
 function handleError(error) {
   console.error(error);
   if (error.message === "UNAUTHORIZED") {
